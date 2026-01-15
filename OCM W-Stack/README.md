@@ -45,22 +45,18 @@ Ensure the following utilities are installed on the deployment host:
 ## 3. Deployment Instructions
 
 ### 3.1 Script Preparation
-1. Download the deployment script (`deploy.sh`) from the OCM-W-Stack release package.  
-2. Grant execution permissions:  
-   ```bash
-   chmod +x deploy.sh
-   ```
+1. Download the deployment script (`install.sh`) from the OCM-W-Stack release package.  
 
 ### 3.2 Script Execution
 Run the deployment script with the following parameters:
 
 ```bash
-./deploy.sh NAMESPACE DOMAIN CERT_PATH KEY_PATH EMAIL KUBECONFIG
+./install.sh NAMESPACE DOMAIN CERT_PATH KEY_PATH EMAIL KUBECONFIG
 ```
 
 #### Example:
 ```bash
-./deploy.sh ocm example.com ./certs/fullchain.pem ./certs/privkey.pem ops@example.com ~/.kube/config
+./install.sh ocm example.com ./certs/fullchain.pem ./certs/privkey.pem ops@example.com ~/.kube/config
 ```
 
 **Arguments:**

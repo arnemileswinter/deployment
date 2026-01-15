@@ -4,10 +4,10 @@ description: Keycloak is a high performance Java-based identity and access manag
 version: 0.10.0
 dependencies:
   - name: keycloak
-    version: 18.0.2
-    repository: oci://registry-1.docker.io/bitnamicharts
+    version: 18.4.4
+    repository: https://codecentric.github.io/helm-charts
 keywords:
   - keycloak
   - access-management
 sources:
-  - https://github.com/bitnami/charts/tree/main/bitnami/keycloak
+  - https://github.com/codecentric/helm-charts
