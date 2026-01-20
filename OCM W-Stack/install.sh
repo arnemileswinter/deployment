@@ -25,20 +25,18 @@ sudo apt update
 
 if ! openssl version &> /dev/null; then
     # install openssl if missing
-    sudo apt-get install openssl
+    sudo apt install openssl
 fi
 
 if ! git version &> /dev/null; then
     # install git if missing
-    sudo apt-get install git
+    sudo apt install git
 fi
 
 if ! helm version &> /dev/null; then 
     # install helm if missing
-    sudo apt-get install helm
+    sudo apt install helm
 fi
-
-sudo snap install cqlsh
 
 helm repo add jetstack https://charts.jetstack.io --force-update
 
@@ -103,14 +101,14 @@ spec:
               - ReadWriteOnce
             resources:
               requests:
-                storage: 8Gi
+                storage: 4Gi
         config:
           jvmOptions:
             heapSize: 512M
 EOF
 
     echo "Waiting for cassandra cluster to be ready..."
-    kubectl wait --for=condition=Running k8ssandracluster/cassandra -n cassandra --timeout=600s
+    kubectl wait --for=condition=CassandraInitialized k8ssandracluster/cassandra -n cassandra --timeout=600s
 
     # Copy password to target namespace
     kubectl create secret generic "cassandra" -n ${NAMESPACE} \
@@ -120,41 +118,34 @@ EOF
 
     USERNAME="cassandra"
     PASSWORD=$CASSANDRA_PASSWORD
+    CASSANDRA_POD="cassandra-dc1-default-sts-0"
 
     echo "Versuche, eine Verbindung zu Cassandra herzustellen..."
 
-    # Schleife, um Verbindung zu versuchen
+    # Schleife, um Verbindung zu versuchen (use cqlsh inside the pod)
     while true; do
-
-        kubectl port-forward svc/cassandra-dc1-service 9042:9042 -n cassandra &
-        PID=$!
-
-        echo $PID
-
-        # Wait for port-forward to establish
-        sleep 3
-
-        # Überprüfen ob cqlsh erfolgreich eine Verbindung herstellen kann
-        if cqlsh -u $USERNAME -p $PASSWORD -e "SHOW HOST;" &> /dev/null; then
+        if kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD -e "SHOW HOST;" &> /dev/null; then
             echo "Erfolgreich mit Cassandra verbunden!"
+            break
         else
             echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
-            kill $PID 2>/dev/null || true
             sleep 5
-            continue
         fi
-
-        curl https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/storage-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > storage.cql
-        curl https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-verification-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > verification.cql
-        curl https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-retrieval-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > retrieval.cql
-
-        cqlsh -u $USERNAME -p $PASSWORD -f ./retrieval.cql
-        cqlsh -u $USERNAME -p $PASSWORD -f ./storage.cql
-        cqlsh -u $USERNAME -p $PASSWORD -f ./verification.cql
-
-        kill $PID
-        break;
     done
+
+    # Download CQL init scripts
+    curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/storage-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > storage.cql
+    curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-verification-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > verification.cql
+    curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-retrieval-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > retrieval.cql
+
+    # Copy scripts to pod and execute
+    kubectl cp retrieval.cql cassandra/$CASSANDRA_POD:/tmp/retrieval.cql -c cassandra
+    kubectl cp storage.cql cassandra/$CASSANDRA_POD:/tmp/storage.cql -c cassandra
+    kubectl cp verification.cql cassandra/$CASSANDRA_POD:/tmp/verification.cql -c cassandra
+
+    kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/retrieval.cql
+    kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/storage.cql
+    kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/verification.cql
 fi 
 
 if ! kubectl get namespace "nats" &> /dev/null; then
@@ -162,6 +153,75 @@ if ! kubectl get namespace "nats" &> /dev/null; then
     helm dependency build "./Nats Chart"; helm install nats "./Nats Chart" --create-namespace --namespace nats
 fi 
 
+
+# PostgreSQL-Admin-Benutzer und Passwort (falls nötig)
+DB_ADMIN_USER="postgres"
+DB_HOST=localhost
+
+if ! kubectl get namespace "cnpg-system" &> /dev/null; then
+    echo "######### Install CloudNativePG Operator"
+    helm install cnpg cnpg/cloudnative-pg --namespace cnpg-system --create-namespace
+
+    echo "Waiting for CloudNativePG operator to be ready..."
+    kubectl wait --for=condition=available deployment/cnpg-cloudnative-pg -n cnpg-system --timeout=120s
+fi
+
+if ! kubectl get namespace "postgres" &> /dev/null; then
+    echo "######### Install Postgres Cluster"
+    kubectl create namespace postgres
+
+    # Generate superuser password
+    POSTGRES_PASSWORD=$(openssl rand -hex 16)
+
+    # Create superuser secret
+    kubectl create secret generic postgres-superuser -n postgres \
+        --from-literal=username=postgres \
+        --from-literal=password=$POSTGRES_PASSWORD
+
+    # Create PostgreSQL cluster
+    kubectl apply -n postgres -f - <<EOF
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.2
+  bootstrap:
+    initdb:
+      database: postgres
+      owner: postgres
+      secret:
+        name: postgres-superuser
+  storage:
+    size: 4Gi
+  superuserSecret:
+    name: postgres-superuser
+EOF
+
+    echo "Waiting for postgres cluster to be ready..."
+    kubectl wait --for=condition=Ready cluster/postgres -n postgres --timeout=300s
+
+    echo "Waiting for postgres pod to be ready..."
+    sleep 10
+    kubectl wait --for=condition=ready pod/postgres-1 -n postgres --timeout=300s
+
+   kubectl delete secret statuslist-db-secret -n ${NAMESPACE} || echo "No statuslist-db-secret to delete"
+   kubectl delete secret wellknown-db-secret -n ${NAMESPACE} || echo "No wellknown-db-secret to delete"
+
+    while true; do
+      kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c 'SELECT 1'
+
+      if [ $? -eq 0 ]; then
+            echo "Erfolgreich mit Postgres verbunden!"
+      else
+            echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
+            sleep 5
+            continue
+      fi
+      break
+    done
+fi
 
 if ! kubectl get namespace "keycloak" &> /dev/null; then
     echo "########### Install Keycloak#########"
@@ -185,26 +245,22 @@ if ! kubectl get namespace "keycloak" &> /dev/null; then
     KC_ADMIN_USER="admin"
     KC_ADMIN_PASSWORD=$(openssl rand -hex 16)
 
-    if ! kubectl get namespace "postgres" &> /dev/null; then
-      kubectl create namespace postgres
-    fi
-
     kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE USER $KC_DB_USER WITH PASSWORD '$KC_DB_PASSWORD';"
     kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE DATABASE $KC_DB_NAME OWNER $KC_DB_USER;"
-
-
-    # Create Keycloak secrets
-    kubectl create secret generic keycloak-init-secrets -n keycloak \
-      --from-literal=username=$KC_ADMIN_USER \
-      --from-literal=admin-password=$KC_ADMIN_PASSWORD \
-      --from-literal=password=$KC_DB_PASSWORD
 
     helm dependency build "./Keycloak"
 
     # Create temp values file with domain substitution
     sed "s/DOMAIN/${DOMAIN}/g" ./Keycloak/values.yaml > /tmp/keycloak-values.yaml
 
-    helm install keycloak "./Keycloak" --namespace keycloak -f /tmp/keycloak-values.yaml
+    # Install Keycloak with secrets passed via --set
+    helm install keycloak "./Keycloak" --namespace keycloak -f /tmp/keycloak-values.yaml \
+      --set secrets.adminUser=$KC_ADMIN_USER \
+      --set secrets.adminPassword=$KC_ADMIN_PASSWORD \
+      --set secrets.dbPassword=$KC_DB_PASSWORD
+
+    echo "Waiting for Keycloak pod to be ready..."
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloak -n keycloak --timeout=300s
 fi
 
 if ! kubectl get namespace "vault" &> /dev/null; then
@@ -244,82 +300,12 @@ if ! kubectl get namespace "vault" &> /dev/null; then
 
      curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"transit"}' http://127.0.0.1:8200/v1/sys/mounts/tenant_space
      curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ed25519"}' http://127.0.0.1:8200/v1/tenant_space/keys/signerkey
-     curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ecdsa-p256"}' http://127.0.0.1:8200/v1/tenant_space/keys/eckey 
+     curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ecdsa-p256"}' http://127.0.0.1:8200/v1/tenant_space/keys/eckey
 
       # Beende das Port-Forwarding
       kill %1
 
 
-fi 
-
-# PostgreSQL-Admin-Benutzer und Passwort (falls nötig)
-DB_ADMIN_USER="postgres"
-DB_HOST=localhost
-
-
-if ! kubectl get namespace "cnpg-system" &> /dev/null; then
-    echo "######### Install CloudNativePG Operator"
-    helm install cnpg cnpg/cloudnative-pg --namespace cnpg-system --create-namespace
-
-    echo "Waiting for CloudNativePG operator to be ready..."
-    kubectl wait --for=condition=available deployment/cnpg-cloudnative-pg -n cnpg-system --timeout=120s
-fi
-
-if ! kubectl get namespace "postgres" &> /dev/null; then
-    echo "######### Install Postgres Cluster"
-    kubectl create namespace postgres
-
-    # Generate superuser password
-    POSTGRES_PASSWORD=$(openssl rand -hex 16)
-
-    # Create superuser secret
-    kubectl create secret generic postgres-superuser -n postgres \
-        --from-literal=username=postgres \
-        --from-literal=password=$POSTGRES_PASSWORD
-
-    # Create PostgreSQL cluster
-    kubectl apply -n postgres -f - <<EOF
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: postgres
-spec:
-  instances: 1
-  imageName: ghcr.io/cloudnative-pg/postgresql:16.2
-  bootstrap:
-    initdb:
-      database: postgres
-      owner: postgres
-      secret:
-        name: postgres-superuser
-  storage:
-    size: 8Gi
-  superuserSecret:
-    name: postgres-superuser
-EOF
-
-    echo "Waiting for postgres cluster to be ready..."
-    kubectl wait --for=condition=Ready cluster/postgres -n postgres --timeout=300s
-
-    echo "Waiting for postgres pod to be ready..."
-    sleep 10
-    kubectl wait --for=condition=ready pod/postgres-1 -n postgres --timeout=300s
-
-   kubectl delete secret statuslist-db-secret -n ${NAMESPACE} || echo "No statuslist-db-secret to delete"
-   kubectl delete secret wellknown-db-secret -n ${NAMESPACE} || echo "No wellknown-db-secret to delete"
-
-    while true; do
-      kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c 'SELECT 1'
-
-      if [ $? -eq 0 ]; then
-            echo "Erfolgreich mit Postgres verbunden!"
-      else
-            echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
-            sleep 5
-            continue
-      fi
-      break
-    done
 fi
 
 POSTGRES_PASSWORD=$(kubectl get secret --namespace postgres postgres-superuser -o jsonpath="{.data.password}" | base64 -d)
@@ -375,10 +361,20 @@ if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
 
       echo "####### Install Pre Auth Bridge Client"
 
+      # Wait for Keycloak to be ready before attempting to get access token
+      echo "Waiting for Keycloak to be ready..."
+      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloak -n keycloak --timeout=300s
+
+      # Start port-forward to Keycloak in background
+      echo "Starting port-forward to Keycloak..."
+      kubectl port-forward svc/keycloak-http -n keycloak 8180:8080 &
+      KC_PORT_FORWARD_PID=$!
+      sleep 5
+
       ADMIN_SECRET_NAMESPACE="keycloak"   # Namespace für das Admin-Secret
-      ADMIN_SECRET_NAME=" keycloak-init-secrets"  # Name des Kubernetes-Secrets für Admin
+      ADMIN_SECRET_NAME="keycloak-init-secrets"  # Name des Kubernetes-Secrets für Admin
       NEW_CLIENT_SECRET_NAME="preauthbridge-oauth"  # Name des neuen Kubernetes-Secrets für den Client
-      KEYCLOAK_URL="https://auth-cloud-wallet.${DOMAIN}"  # Keycloak-URL
+      KEYCLOAK_URL="http://localhost:8180"  # Use port-forward URL
       REALM="master"  # Keycloak-Realm
       NEW_CLIENT_ID="bridge"  # Neue Client-ID
       REDIRECT_URI="http://localhost"  # Redirect-URI
@@ -386,17 +382,29 @@ if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
       ADMIN_USERNAME=$(kubectl get secret $ADMIN_SECRET_NAME -n $ADMIN_SECRET_NAMESPACE -o jsonpath='{.data.username}' | base64 --decode)
       ADMIN_PASSWORD=$(kubectl get secret $ADMIN_SECRET_NAME -n $ADMIN_SECRET_NAMESPACE -o jsonpath='{.data.admin-password}' | base64 --decode)
 
-      ACCESS_TOKEN=$(curl -s -X POST "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "grant_type=password" \
-        -d "client_id=admin-cli" \
-        -d "username=$ADMIN_USERNAME" \
-        -d "password=$ADMIN_PASSWORD" \
-        | jq -r '.access_token')
-      echo $ACCESS_TOKEN
+      # Retry loop to get access token (Keycloak may need time to fully initialize)
+      echo "Attempting to get Keycloak access token..."
+      for i in {1..30}; do
+        ACCESS_TOKEN=$(curl -s -X POST "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "grant_type=password" \
+          -d "client_id=admin-cli" \
+          -d "username=$ADMIN_USERNAME" \
+          -d "password=$ADMIN_PASSWORD" \
+          | jq -r '.access_token')
+
+        if [ -n "$ACCESS_TOKEN" ] && [ "$ACCESS_TOKEN" != "null" ]; then
+          echo "Successfully obtained access token"
+          break
+        fi
+        echo "Waiting for Keycloak to be fully ready... attempt $i/30"
+        sleep 10
+      done
+
       # Überprüfe, ob das Access Token erfolgreich geholt wurde
-      if [ -z "$ACCESS_TOKEN" ]; then
+      if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" == "null" ]; then
         echo "Fehler: Konnte kein Access Token erhalten."
+        kill $KC_PORT_FORWARD_PID 2>/dev/null || true
         exit 1
       fi
 
@@ -519,15 +527,14 @@ EOF
         --namespace ${NAMESPACE}
 
       helm dependency build "./Pre Authorization Bridge Chart"
-      helm install preauthbridge "./Pre Authorization Bridge Chart" -n ${NAMESPACE} \
-        --set "pre-authorization-bridge.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-        --set "pre-authorization-bridge.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-        --set "pre-authorization-bridge.config.nats.url=nats://nats.nats.svc.cluster.local:4222" \
-        --set "pre-authorization-bridge.config.database.hosts=redis-master.${NAMESPACE}.svc.cluster.local:6379" \
-        --set "pre-authorization-bridge.config.oAuth.serverUrl=https://auth-cloud-wallet.${DOMAIN}/realms/master/protocol/openid-connect/token" \
-        --set "pre-authorization-bridge.config.wellKnown.issuer=https://cloud-wallet.${DOMAIN}" \
-        --set "pre-authorization-bridge.config.wellKnown.token_endpoint=https://cloud-wallet.${DOMAIN}/token"
 
+      # Create temp values file with domain and namespace substitution
+      sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Pre Authorization Bridge Chart/values.yaml" > /tmp/preauthbridge-values.yaml
+
+      helm install preauthbridge "./Pre Authorization Bridge Chart" -n ${NAMESPACE} -f /tmp/preauthbridge-values.yaml
+
+      # Stop Keycloak port-forward
+      kill $KC_PORT_FORWARD_PID 2>/dev/null || true
 fi
 
 echo "######### Install TSA Stuff" 
@@ -560,11 +567,6 @@ helm install sd-jwt "./sd-jwt-service/deployment/helm" --namespace ${NAMESPACE} 
 kubectl create secret generic vault -n ${NAMESPACE} \
   --from-literal=token=test
 
-kubectl create secret tls xfsc-wildcard \
-  --cert=tls.crt \
-  --key=tls.key \
-  --namespace ${NAMESPACE}
-
 echo "###################Install Well Known Routes"
 
 helm dependency build "./Well Known Ingress Rules"
@@ -572,74 +574,38 @@ helm install well-known-rules "./Well Known Ingress Rules" -n ${NAMESPACE} \
   --set "ingress.hostname=cloud-wallet.${DOMAIN}"
 
 helm dependency build "./Well Known Chart"
-helm install well-known "./Well Known Chart" -n ${NAMESPACE} \
-  --set "well-known-service.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-  --set "well-known-service.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "well-known-service.config.postgres.host=postgres-rw.postgres.svc.cluster.local" \
-  --set "well-known-service.config.nats.url=nats.nats.svc.cluster.local:4222" \
-  --set "well-known-service.config.issuer=cloud-wallet.${DOMAIN}"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Well Known Chart/values.yaml" > /tmp/wellknown-values.yaml
+helm install well-known "./Well Known Chart" -n ${NAMESPACE} -f /tmp/wellknown-values.yaml \
+  --set "well-known-service.config.postgres.host=postgres-rw.postgres.svc.cluster.local"
 
 helm dependency build "./Didcomm"
-helm install didcomm-connector "./Didcomm" -n ${NAMESPACE} \
-  --set "didcomm-connector.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-  --set "didcomm-connector.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "didcomm-connector.config.url=https://cloud-wallet.${DOMAIN}/api/didcomm" \
-  --set "didcomm-connector.config.didcomm.resolverUrl=http://universal-resolver-service.${NAMESPACE}.svc.cluster.local:8080" \
-  --set "didcomm-connector.config.messaging.nats.url=nats://nats.nats.svc.cluster.local:4222" \
-  --set "didcomm-connector.config.database.host=cassandra-dc1-service.cassandra.svc.cluster.local:9042"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Didcomm/values.yaml" > /tmp/didcomm-values.yaml
+helm install didcomm-connector "./Didcomm" -n ${NAMESPACE} -f /tmp/didcomm-values.yaml
 
 helm dependency build "./Credential Issuance"
-helm install credential-issuance "./Credential Issuance" -n ${NAMESPACE} \
-  --set "issuance-service.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-  --set "issuance-service.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "issuance-service.config.jwksUrl=https://auth-cloud-wallet.${DOMAIN}/realms/master/protocol/openid-connect/certs" \
-  --set "issuance-service.config.audience=https://cloud-wallet.${DOMAIN}" \
-  --set "issuance-service.config.nats.url=nats://nats.nats.svc.cluster.local:4222"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Credential Issuance/values.yaml" > /tmp/issuance-values.yaml
+helm install credential-issuance "./Credential Issuance" -n ${NAMESPACE} -f /tmp/issuance-values.yaml
 
 helm dependency build "./Credential Retrieval"
-helm install credential-retrieval "./Credential Retrieval" -n ${NAMESPACE} \
-  --set "credential-retrieval-service.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-  --set "credential-retrieval-service.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "credential-retrieval-service.config.nats.url=nats://nats.nats.svc.cluster.local:4222" \
-  --set "credential-retrieval-service.config.cassandra.hosts=cassandra-dc1-service.cassandra.svc.cluster.local:9042"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Credential Retrieval/values.yaml" > /tmp/retrieval-values.yaml
+helm install credential-retrieval "./Credential Retrieval" -n ${NAMESPACE} -f /tmp/retrieval-values.yaml
 
 echo "Create a signing key for credential verification service"
 openssl ecparam -genkey -name prime256v1 -noout -out signing_key.pem
 kubectl create secret -n ${NAMESPACE} generic signing --from-file=signing-key=signing_key.pem
 
 helm dependency build "./Credential Verification Service Chart"
-helm install credential-verification "./Credential Verification Service Chart" -n ${NAMESPACE} \
-  --set "credential-verification-service.ingress.annotations.nginx\.ingress\.kubernetes\.io/configuration-snippet=proxy_set_header X-DID did:web:cloud-wallet.${DOMAIN};\nproxy_set_header X-NAMESPACE tenant_space;\nproxy_set_header X-KEY eckey;" \
-  --set "credential-verification-service.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-  --set "credential-verification-service.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "credential-verification-service.config.cassandra.cassandraHosts=cassandra-dc1-service.cassandra.svc.cluster.local" \
-  --set "credential-verification-service.config.didResolver=http://universal-resolver-service.${NAMESPACE}.svc.cluster.local:8080" \
-  --set "credential-verification-service.config.externalPresentation.authorizeEndpoint=credential-verification-service.${NAMESPACE}.svc.cluster.local:8080/v1/tenants/tenant_space/presentation/" \
-  --set "credential-verification-service.config.signerService.presentationVerifyUrl=http://signer.${NAMESPACE}.svc.cluster.local:8080/v1/presentation/verify" \
-  --set "credential-verification-service.config.signerService.presentationSignUrl=http://signer.${NAMESPACE}.svc.cluster.local:8080/v1/presentation/proof" \
-  --set "credential-verification-service.config.messaging.nats.url=nats.nats.svc.cluster.local:4222"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Credential Verification Service Chart/values.yaml" > /tmp/verification-values.yaml
+helm install credential-verification "./Credential Verification Service Chart" -n ${NAMESPACE} -f /tmp/verification-values.yaml
 
 helm dependency build "./Storage Service"
-helm install storage-service "./Storage Service" -n ${NAMESPACE} \
-  --set "storage-service.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "storage-service.config.cassandra.hosts=cassandra-dc1-service.cassandra.svc.cluster.local:9042" \
-  --set "storage-service.config.crypto.namespace=${NAMESPACE}" \
-  --set "storage-service.config.messaging.host=nats://nats.nats.svc.cluster.local:4222" \
-  --set "storage-service.config.vault.address=http://vault.vault.svc.cluster.local:8200"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Storage Service/values.yaml" > /tmp/storage-values.yaml
+helm install storage-service "./Storage Service" -n ${NAMESPACE} -f /tmp/storage-values.yaml
 
 helm dependency build "./Status List Service Chart"
-helm install statuslist-service "./Status List Service Chart" -n ${NAMESPACE} \
-  --set "status-list-service.ingress.annotations.nginx\.ingress\.kubernetes\.io/configuration-snippet=proxy_set_header X-DID did:web:cloud-wallet.${DOMAIN};\nproxy_set_header X-NAMESPACE tenant_space;\nproxy_set_header X-KEY signerkey;\nproxy_set_header X-GROUP \"\";\nproxy_set_header X-HOST cloud-wallet.${DOMAIN};\nproxy_set_header X-TYPE StatusList2021;" \
-  --set "status-list-service.ingress.hosts[0].host=cloud-wallet.${DOMAIN}" \
-  --set "status-list-service.ingress.tls[0].hosts[0]=cloud-wallet.${DOMAIN}" \
-  --set "status-list-service.config.messaging.nats.url=http://nats.nats.svc.cluster.local:4222" \
-  --set "status-list-service.config.database.host=postgres-rw.postgres.svc.cluster.local"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Status List Service Chart/values.yaml" > /tmp/statuslist-values.yaml
+helm install statuslist-service "./Status List Service Chart" -n ${NAMESPACE} -f /tmp/statuslist-values.yaml
 
 helm dependency build "./Dummy Content Signer"
-helm install dummy-contentsigner "./Dummy Content Signer" -n ${NAMESPACE} \
-  --set "dummycontentsigner.config.origin=https://cloud-wallet.${DOMAIN}" \
-  --set "dummycontentsigner.config.credential_issuer=https://cloud-wallet.${DOMAIN}" \
-  --set "dummycontentsigner.config.authorization_server[0]=https://cloud-wallet.${DOMAIN}" \
-  --set "dummycontentsigner.config.credential_endpoint=https://cloud-wallet.${DOMAIN}/api/issuance/credential" \
-  --set "dummycontentsigner.config.signerUrl=http://signer.${NAMESPACE}.svc.cluster.local:8080/v1/credential" \
-  --set "dummycontentsigner.config.nats.url=nats://nats.nats.svc.cluster.local:4222"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Dummy Content Signer/values.yaml" > /tmp/dummysigner-values.yaml
+helm install dummy-contentsigner "./Dummy Content Signer" -n ${NAMESPACE} -f /tmp/dummysigner-values.yaml
