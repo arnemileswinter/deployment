@@ -60,7 +60,8 @@ if ! kubectl get namespace "cert-manager" &> /dev/null; then
 fi
 
 echo "############### Install Traefik Middlewares"
-helm install traefik-middlewares ./Traefik-Middlewares --namespace ${NAMESPACE} 
+helm install traefik-middlewares ./Traefik-Middlewares --namespace ${NAMESPACE} \
+  --set "hostname=cloud-wallet.${DOMAIN}"
 
 if ! kubectl get namespace "cassandra" &> /dev/null; then
 
@@ -568,7 +569,7 @@ helm install sd-jwt "./sd-jwt-service/deployment/helm" --namespace ${NAMESPACE} 
   --set "sd-jwt-service.config.signUrl=http://signer.${NAMESPACE}.svc.cluster.local:8080/v1/sign"
 
 kubectl create secret generic vault -n ${NAMESPACE} \
-  --from-literal=token=test
+  --from-literal=token=root
 
 echo "###################Install Well Known Routes"
 

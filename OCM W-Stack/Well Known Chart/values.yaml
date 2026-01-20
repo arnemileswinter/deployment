@@ -1,22 +1,21 @@
 well-known-service:
-  image: 
+  image:
     pullPolicy: Always
   ingress:
-   enabled: true
-   ingressClassName: traefik
-   annotations:
-     cert-manager.io/cluster-issuer: letsencrypt-prod
-     traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-rewrite-openid-credential-issuer@kubernetescrd
-   hosts:
-     - host: cloud-wallet.DOMAIN
-       paths:
-         - path: /.well-known/openid-credential-issuer
-           pathtype: ImplementationSpecific
-           port: 8080
-   tls:
-     - secretName: xfsc-wildcard
-       hosts:
-         - cloud-wallet.DOMAIN
+   enabled: false  # Disabled - using local template override instead
+# Local ingress configuration (used by templates/ingress.yaml)
+localIngress:
+  enabled: true
+  hosts:
+    - host: cloud-wallet.DOMAIN
+      paths:
+        - path: /.well-known/openid-credential-issuer
+          pathtype: ImplementationSpecific
+          port: 8080
+  tls:
+    - secretName: xfsc-wildcard
+      hosts:
+        - cloud-wallet.DOMAIN
   config:
     loglevel: DEBUG
     isdev: false

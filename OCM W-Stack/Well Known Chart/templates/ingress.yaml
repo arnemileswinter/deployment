@@ -1,0 +1,39 @@
+{{- if .Values.localIngress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: well-known-service-ingress
+  labels:
+    app.kubernetes.io/name: well-known-service
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-rewrite-openid-credential-issuer@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+  {{- range .Values.localIngress.hosts }}
+  - host: {{ .host }}
+    http:
+      paths:
+      {{- range .paths }}
+      - path: {{ .path }}
+        pathType: {{ .pathtype | default "ImplementationSpecific" }}
+        backend:
+          service:
+            name: well-known-service
+            port:
+              number: {{ .port }}
+      {{- end }}
+  {{- end }}
+  {{- if .Values.localIngress.tls }}
+  tls:
+  {{- range .Values.localIngress.tls }}
+  - hosts:
+    {{- range .hosts }}
+    - {{ . }}
+    {{- end }}
+    secretName: {{ .secretName }}
+  {{- end }}
+  {{- end }}
+{{- end }}
