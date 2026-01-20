@@ -1,0 +1,189 @@
+# Path Rewrite Middlewares
+---
+# Rewrite /.well-known/did.json -> /v1/did/document
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-did-document
+spec:
+  replacePath:
+    path: /v1/did/document
+---
+# Rewrite /.well-known/did-configuration.json -> /v1/did/configuration
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-did-configuration
+spec:
+  replacePath:
+    path: /v1/did/configuration
+---
+# Rewrite /.well-known/jwks.json -> /v1/jwks
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-jwks
+spec:
+  replacePath:
+    path: /v1/jwks
+---
+# Rewrite /.well-known/openid-credential-issuer -> /v1/tenants/{tenant}/.well-known/openid-credential-issuer
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-openid-credential-issuer
+spec:
+  replacePath:
+    path: /v1/tenants/{{ .Values.tenantName }}/.well-known/openid-credential-issuer
+---
+# Rewrite /api/issuance/credential -> /v1/tenants/{tenant}/credential
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-issuance-credential
+spec:
+  replacePath:
+    path: /v1/tenants/{{ .Values.tenantName }}/credential
+---
+# Rewrite /api/didcomm(/|$)(.*) -> /$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-didcomm
+spec:
+  replacePathRegex:
+    regex: ^/api/didcomm(/|$)(.*)
+    replacement: /$2
+---
+# Rewrite /api/offering(/|$)(.*) -> /v1/tenants/{tenant}/offering/$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-offering
+spec:
+  replacePathRegex:
+    regex: ^/api/offering(/|$)(.*)
+    replacement: /v1/tenants/{{ .Values.tenantName }}/offering/$2
+---
+# Rewrite /api/presentation(/|$)(.*) -> /v1/tenants/{tenant}/presentation/$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-presentation
+spec:
+  replacePathRegex:
+    regex: ^/api/presentation(/|$)(.*)
+    replacement: /v1/tenants/{{ .Values.tenantName }}/presentation/$2
+---
+# Rewrite /api/status(/|$)(.*) -> /v1/tenants/{tenant}/status/$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-status
+spec:
+  replacePathRegex:
+    regex: ^/api/status(/|$)(.*)
+    replacement: /v1/tenants/{{ .Values.tenantName }}/status/$2
+---
+# Rewrite /storage(/|$)(.*) -> /v1/tenants/{tenant}/storage/$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-storage
+spec:
+  replacePathRegex:
+    regex: ^/storage(/|$)(.*)
+    replacement: /v1/tenants/{{ .Values.tenantName }}/storage/$2
+---
+# Rewrite /policy(/|$)(.*) -> /$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-policy
+spec:
+  replacePathRegex:
+    regex: ^/policy(/|$)(.*)
+    replacement: /$2
+---
+# Rewrite /signer(/|$)(.*) -> /$2
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rewrite-signer
+spec:
+  replacePathRegex:
+    regex: ^/signer(/|$)(.*)
+    replacement: /$2
+
+# Header Middlewares
+---
+# Headers for DID Document endpoint
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headers-did-document
+spec:
+  headers:
+    customRequestHeaders:
+      X-DID: "did:web:{{ .Values.hostname }}"
+      X-NAMESPACE: "{{ .Values.tenantName }}"
+---
+# Headers for DID Configuration endpoint
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headers-did-configuration
+spec:
+  headers:
+    customRequestHeaders:
+      X-ORIGIN: "{{ .Values.hostname }}"
+      X-NAMESPACE: "{{ .Values.tenantName }}"
+---
+# Headers for JWKS endpoint
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headers-jwks
+spec:
+  headers:
+    customRequestHeaders:
+      X-NAMESPACE: "{{ .Values.tenantName }}"
+---
+# Headers for Credential Verification Service
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headers-credential-verification
+spec:
+  headers:
+    customRequestHeaders:
+      X-DID: "did:web:{{ .Values.hostname }}"
+      X-NAMESPACE: "{{ .Values.tenantName }}"
+      X-KEY: "eckey"
+---
+# Headers for Status List Service
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headers-status-list
+spec:
+  headers:
+    customRequestHeaders:
+      X-DID: "did:web:{{ .Values.hostname }}"
+      X-NAMESPACE: "{{ .Values.tenantName }}"
+      X-KEY: "signerkey"
+      X-GROUP: ""
+      X-HOST: "{{ .Values.hostname }}"
+      X-TYPE: "StatusList2021"
+
+# Buffering Middlewares
+---
+# Limit request body to 2KB
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: buffering-2k
+spec:
+  buffering:
+    maxRequestBodyBytes: 2048
+    memRequestBodyBytes: 2048

@@ -9,13 +9,9 @@ credential-verification-service:
   podAnnotations: {}
   ingress:
     enabled: true
+    ingressClassName: traefik
     annotations:
-      nginx.ingress.kubernetes.io/configuration-snippet: |
-        proxy_set_header X-DID did:web:cloud-wallet.DOMAIN;
-        proxy_set_header X-NAMESPACE tenant_space;
-        proxy_set_header X-KEY eckey;
-      nginx.org/client-max-body-size: 2K
-      nginx.ingress.kubernetes.io/rewrite-target: /v1/tenants/tenant_space/presentation/$2
+      traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-headers-credential-verification@kubernetescrd,NAMESPACE-rewrite-presentation@kubernetescrd,NAMESPACE-buffering-2k@kubernetescrd
     hosts:
       - host: cloud-wallet.DOMAIN
         paths:

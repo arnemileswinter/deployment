@@ -29,10 +29,9 @@ didcomm-connector:
 
   ingress:
     enabled: true
-    ingressClassName: nginx
+    ingressClassName: traefik
     annotations:
-      nginx.ingress.kubernetes.io/use-regex: "true" 
-      nginx.ingress.kubernetes.io/rewrite-target: /$2
+      traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-rewrite-didcomm@kubernetescrd
     hosts:
       - host: cloud-wallet.DOMAIN
         paths:

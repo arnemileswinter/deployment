@@ -22,16 +22,10 @@ status-list-service:
 
   ingress:
     enabled: true
+    ingressClassName: traefik
     annotations:
       cert-manager.io/cluster-issuer: letsencrypt-prod
-      nginx.ingress.kubernetes.io/configuration-snippet: |
-        proxy_set_header X-DID did:web:cloud-wallet.DOMAIN;
-        proxy_set_header X-NAMESPACE tenant_space;
-        proxy_set_header X-KEY signerkey;
-        proxy_set_header X-GROUP "";
-        proxy_set_header X-HOST cloud-wallet.DOMAIN;
-        proxy_set_header X-TYPE StatusList2021;
-      nginx.ingress.kubernetes.io/rewrite-target: /v1/tenants/tenant_space/status/$2
+      traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-headers-status-list@kubernetescrd,NAMESPACE-rewrite-status@kubernetescrd
     hosts:
       - host: cloud-wallet.DOMAIN
         paths:

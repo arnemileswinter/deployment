@@ -21,9 +21,9 @@ credential-retrieval-service:
 
   ingress:
     enabled: true
+    ingressClassName: traefik
     annotations:
-      nginx.org/client-max-body-size: 2K
-      nginx.ingress.kubernetes.io/rewrite-target: /v1/tenants/tenant_space/offering/$2
+      traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-rewrite-offering@kubernetescrd,NAMESPACE-buffering-2k@kubernetescrd
     hosts:
       - host: cloud-wallet.DOMAIN
         paths:

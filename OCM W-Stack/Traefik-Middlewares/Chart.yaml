@@ -1,0 +1,5 @@
+apiVersion: v2
+name: traefik-middlewares
+description: Traefik middleware definitions for OCM W-Stack
+version: 1.0.0
+appVersion: "1.0.0"

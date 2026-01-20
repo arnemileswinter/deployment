@@ -4,8 +4,8 @@ pre-authorization-bridge:
     tag: "main"
   ingress:
    enabled: true
+   ingressClassName: traefik
    annotations:
-     kubernetes.io/ingress.class: nginx
      cert-manager.io/cluster-issuer: letsencrypt-prod
    hosts:
      - host: cloud-wallet.DOMAIN

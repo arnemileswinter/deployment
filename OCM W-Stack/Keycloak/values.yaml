@@ -63,7 +63,7 @@ keycloak:
     httpPort: 8080
   ingress:
     enabled: true
-    ingressClassName: nginx
+    ingressClassName: traefik
     rules:
       - host: auth-cloud-wallet.DOMAIN
         paths:
@@ -74,9 +74,6 @@ keycloak:
           - auth-cloud-wallet.DOMAIN
         secretName: xfsc-wildcard
     annotations:
-      nginx.ingress.kubernetes.io/ssl-redirect: "false"
-      nginx.ingress.kubernetes.io/proxy-buffer-size: 256k
-      nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
       cert-manager.io/cluster-issuer: letsencrypt-prod
   postgresql:
     enabled: false

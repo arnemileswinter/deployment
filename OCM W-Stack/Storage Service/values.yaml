@@ -33,10 +33,10 @@ storage-service:
 
   ingress:
     enabled: false
+    ingressClassName: traefik
     annotations:
       cert-manager.io/cluster-issuer: letsencrypt-prod
-      nginx.org/client-max-body-size: 2K
-      nginx.ingress.kubernetes.io/rewrite-target: /v1/tenants/tenant_space/storage/$2
+      traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-rewrite-storage@kubernetescrd,NAMESPACE-buffering-2k@kubernetescrd
     hosts:
       - host:
         paths:

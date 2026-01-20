@@ -3,10 +3,10 @@ well-known-service:
     pullPolicy: Always
   ingress:
    enabled: true
+   ingressClassName: traefik
    annotations:
-     kubernetes.io/ingress.class: nginx
      cert-manager.io/cluster-issuer: letsencrypt-prod
-     nginx.ingress.kubernetes.io/rewrite-target: /v1/tenants/tenant_space/.well-known/openid-credential-issuer
+     traefik.ingress.kubernetes.io/router.middlewares: NAMESPACE-rewrite-openid-credential-issuer@kubernetescrd
    hosts:
      - host: cloud-wallet.DOMAIN
        paths:
@@ -21,11 +21,11 @@ well-known-service:
     loglevel: DEBUG
     isdev: false
     postgres:
-      host: postgres-postgresql.NAMESPACE.svc.cluster.local       
+      host: postgres-rw.postgres.svc.cluster.local
       port: 5432
       database: wellknown
-      user: postgres
-      password: 
+      user: wellknown
+      password:
         key: postgresql-password
         name: wellknown-db-secret
       params: sslmode:disable

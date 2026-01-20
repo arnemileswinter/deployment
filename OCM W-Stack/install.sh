@@ -57,7 +57,10 @@ if ! kubectl get namespace "cert-manager" &> /dev/null; then
     helm dependency build ./Cert-Manager; helm install cert-manager ./Cert-Manager  --create-namespace --namespace cert-manager
     helm dependency build ./Cluster-Issuer; helm install cluster-issuer ./Cluster-Issuer  --create-namespace --namespace cert-manager --set email=$1
 
-fi 
+fi
+
+echo "############### Install Traefik Middlewares"
+helm install traefik-middlewares ./Traefik-Middlewares --namespace ${NAMESPACE} 
 
 if ! kubectl get namespace "cassandra" &> /dev/null; then
 

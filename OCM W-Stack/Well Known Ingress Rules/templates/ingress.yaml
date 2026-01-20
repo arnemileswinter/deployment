@@ -5,12 +5,9 @@ metadata:
   name: {{ .Release.Name }}-diddocument-ingress
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-DID did:web:{{ .Values.ingress.hostname }};
-      proxy_set_header X-NAMESPACE {{ .Values.ingress.tenantName }};
-    nginx.ingress.kubernetes.io/rewrite-target: /v1/did/document
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-headers-did-document@kubernetescrd,{{ .Release.Namespace }}-rewrite-did-document@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
   - host: {{ .Values.ingress.hostname }}
     http:
@@ -36,12 +33,9 @@ metadata:
   name: {{ .Release.Name }}-diddconfig-ingress
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-ORIGIN {{ .Values.ingress.hostname }};
-      proxy_set_header X-NAMESPACE {{ .Values.ingress.tenantName }};
-    nginx.ingress.kubernetes.io/rewrite-target: /v1/did/configuration
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-headers-did-configuration@kubernetescrd,{{ .Release.Namespace }}-rewrite-did-configuration@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
   - host: {{ .Values.ingress.hostname }}
     http:
@@ -53,7 +47,7 @@ spec:
             name: {{ .Values.ingress.service.backend }}
             port:
               number: {{ .Values.ingress.service.port }}
-  
+
   {{ if .Values.ingress.tls }}
   tls:
   - hosts:
@@ -67,11 +61,9 @@ metadata:
   name: {{ .Release.Name }}-didjwk-ingress
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-NAMESPACE {{ .Values.ingress.tenantName }};
-    nginx.ingress.kubernetes.io/rewrite-target: /v1/jwks
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-headers-jwks@kubernetescrd,{{ .Release.Namespace }}-rewrite-jwks@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
   - host: {{ .Values.ingress.hostname }}
     http:
