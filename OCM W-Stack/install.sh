@@ -185,8 +185,13 @@ if ! kubectl get namespace "keycloak" &> /dev/null; then
     KC_ADMIN_USER="admin"
     KC_ADMIN_PASSWORD=$(openssl rand -hex 16)
 
+    if ! kubectl get namespace "postgres" &> /dev/null; then
+      kubectl create namespace postgres
+    fi
+
     kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE USER $KC_DB_USER WITH PASSWORD '$KC_DB_PASSWORD';"
     kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE DATABASE $KC_DB_NAME OWNER $KC_DB_USER;"
+
 
     # Create Keycloak secrets
     kubectl create secret generic keycloak-init-secrets -n keycloak \
