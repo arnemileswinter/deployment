@@ -436,7 +436,8 @@ git clone https://gitlab.eclipse.org/eclipse/xfsc/common-services/sd-jwt-service
 helm dependency build "./signer/deployment/helm"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./signer/deployment/helm/values.yaml" > /tmp/signer-values.yaml
 helm install signer "./signer/deployment/helm" --namespace ${NAMESPACE} -f /tmp/signer-values.yaml \
-  --set signer.nats.natsHost="nats://nats.${NAMESPACE}.svc.cluster.local:4222"
+  --set signer.nats.natsHost="nats://nats.${NAMESPACE}.svc.cluster.local:4222" \
+  --set signer.vault.addr="http://vault.${NAMESPACE}.svc.cluster.local:8200"
 
 helm dependency build "./sd-jwt-service/deployment/helm"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./sd-jwt-service/deployment/helm/values.yaml" > /tmp/sdjwt-values.yaml
