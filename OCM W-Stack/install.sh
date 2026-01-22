@@ -33,7 +33,7 @@ if ! git version &> /dev/null; then
     sudo apt install git
 fi
 
-if ! helm version &> /dev/null; then 
+if ! helm version &> /dev/null; then
     # install helm if missing
     sudo apt install helm
 fi
@@ -55,107 +55,80 @@ helm repo update
 if ! kubectl get namespace "cert-manager" &> /dev/null; then
     echo "############### Install Cert Manager"
     helm dependency build ./Cert-Manager; helm install cert-manager ./Cert-Manager  --create-namespace --namespace cert-manager
-    helm dependency build ./Cluster-Issuer; helm install cluster-issuer ./Cluster-Issuer  --create-namespace --namespace cert-manager --set email=$1
 
+    sed "s/DOMAIN/${DOMAIN}/g" ./Cluster-Issuer/values.yaml > /tmp/cluster-issuer-values.yaml
+    helm dependency build ./Cluster-Issuer; helm install cluster-issuer ./Cluster-Issuer --create-namespace --namespace cert-manager -f /tmp/cluster-issuer-values.yaml
 fi
 
 echo "############### Install Traefik Middlewares"
-helm install traefik-middlewares ./Traefik-Middlewares --namespace ${NAMESPACE} \
-  --set "hostname=cloud-wallet.${DOMAIN}"
+sed "s/DOMAIN/${DOMAIN}/g" ./Traefik-Middlewares/values.yaml > /tmp/traefik-middlewares-values.yaml
+helm install traefik-middlewares ./Traefik-Middlewares --namespace ${NAMESPACE} -f /tmp/traefik-middlewares-values.yaml
 
-if ! kubectl get namespace "cassandra" &> /dev/null; then
+# Install k8ssandra-operator
+helm install k8ssandra-operator k8ssandra/k8ssandra-operator -n $NAMESPACE
 
-    kubectl create namespace cassandra
+echo "Waiting for k8ssandra-operator to be ready..."
+kubectl wait --for=condition=available deployment/k8ssandra-operator -n $NAMESPACE --timeout=120s
 
-    CASSANDRA_NAMESPACE="cassandra"
+echo "Waiting for K8ssandraCluster CRD to be registered..."
+until kubectl get crd k8ssandraclusters.k8ssandra.io &> /dev/null; do
+    echo "CRD not yet available, waiting..."
+    sleep 5
+done
+kubectl wait --for=condition=Established crd/k8ssandraclusters.k8ssandra.io --timeout=60s
 
-    # Install k8ssandra-operator
-    helm install k8ssandra-operator k8ssandra/k8ssandra-operator -n cassandra
+# Generate password for cassandra
+CASSANDRA_PASSWORD=$(openssl rand -hex 16)
 
-    echo "Waiting for k8ssandra-operator to be ready..."
-    kubectl wait --for=condition=available deployment/k8ssandra-operator -n cassandra --timeout=120s
+# Create the superuser secret
+kubectl create secret generic cassandra-superuser -n $NAMESPACE \
+    --from-literal=username=cassandra \
+    --from-literal=password=$CASSANDRA_PASSWORD
 
-    # Generate password for cassandra
-    CASSANDRA_PASSWORD=$(openssl rand -hex 16)
+# Create K8ssandraCluster resource from manifest file
+kubectl apply -n $NAMESPACE -f ./manifests/k8ssandra-cluster.yaml
 
-    # Create the superuser secret
-    kubectl create secret generic cassandra-superuser -n cassandra \
-        --from-literal=username=cassandra \
-        --from-literal=password=$CASSANDRA_PASSWORD
-    
-    # Create K8ssandraCluster resource
-    kubectl apply -n cassandra -f - <<EOF
-apiVersion: k8ssandra.io/v1alpha1
-kind: K8ssandraCluster
-metadata:
-  name: cassandra
-spec:
-  cassandra:
-    serverVersion: "4.1.0"
-    superuserSecretRef:
-      name: cassandra-superuser
-    datacenters:
-      - metadata:
-          name: dc1
-        size: 1
-        storageConfig:
-          cassandraDataVolumeClaimSpec:
-            storageClassName: local-path
-            accessModes:
-              - ReadWriteOnce
-            resources:
-              requests:
-                storage: 4Gi
-        config:
-          jvmOptions:
-            heapSize: 512M
-EOF
+echo "Waiting for cassandra cluster to be ready..."
+kubectl wait --for=condition=CassandraInitialized k8ssandracluster/cassandra -n $NAMESPACE --timeout=600s
 
-    echo "Waiting for cassandra cluster to be ready..."
-    kubectl wait --for=condition=CassandraInitialized k8ssandracluster/cassandra -n cassandra --timeout=600s
+# Copy password to target namespace
+kubectl create secret generic "cassandra" -n ${NAMESPACE} \
+    --from-literal=cassandra-password=$CASSANDRA_PASSWORD
 
-    # Copy password to target namespace
-    kubectl create secret generic "cassandra" -n ${NAMESPACE} \
-        --from-literal=cassandra-password=$CASSANDRA_PASSWORD
+echo "Wait for cassandra to be finished"
 
-    echo "Wait for cassandra to be finished"
+USERNAME="cassandra"
+PASSWORD=$CASSANDRA_PASSWORD
+CASSANDRA_POD="cassandra-dc1-default-sts-0"
 
-    USERNAME="cassandra"
-    PASSWORD=$CASSANDRA_PASSWORD
-    CASSANDRA_POD="cassandra-dc1-default-sts-0"
+echo "Versuche, eine Verbindung zu Cassandra herzustellen..."
 
-    echo "Versuche, eine Verbindung zu Cassandra herzustellen..."
+# Schleife, um Verbindung zu versuchen (use cqlsh inside the pod)
+while true; do
+    if kubectl exec -n $NAMESPACE $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD -e "SHOW HOST;" &> /dev/null; then
+        echo "Erfolgreich mit Cassandra verbunden!"
+        break
+    else
+        echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
+        sleep 5
+    fi
+done
 
-    # Schleife, um Verbindung zu versuchen (use cqlsh inside the pod)
-    while true; do
-        if kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD -e "SHOW HOST;" &> /dev/null; then
-            echo "Erfolgreich mit Cassandra verbunden!"
-            break
-        else
-            echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
-            sleep 5
-        fi
-    done
+# Download CQL init scripts
+curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/storage-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > storage.cql
+curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-verification-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > verification.cql
+curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-retrieval-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > retrieval.cql
 
-    # Download CQL init scripts
-    curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/storage-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > storage.cql
-    curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-verification-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > verification.cql
-    curl -s https://gitlab.eclipse.org/eclipse/xfsc/organisational-credential-manager-w-stack/credential-retrieval-service/-/raw/main/scripts/cql/initialize.cql?ref_type=heads > retrieval.cql
+# Copy scripts to pod and execute
+kubectl cp retrieval.cql $NAMESPACE/$CASSANDRA_POD:/tmp/retrieval.cql -c cassandra
+kubectl cp storage.cql $NAMESPACE/$CASSANDRA_POD:/tmp/storage.cql -c cassandra
+kubectl cp verification.cql $NAMESPACE/$CASSANDRA_POD:/tmp/verification.cql -c cassandra
 
-    # Copy scripts to pod and execute
-    kubectl cp retrieval.cql cassandra/$CASSANDRA_POD:/tmp/retrieval.cql -c cassandra
-    kubectl cp storage.cql cassandra/$CASSANDRA_POD:/tmp/storage.cql -c cassandra
-    kubectl cp verification.cql cassandra/$CASSANDRA_POD:/tmp/verification.cql -c cassandra
+kubectl exec -n $NAMESPACE $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/retrieval.cql
+kubectl exec -n $NAMESPACE $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/storage.cql
+kubectl exec -n $NAMESPACE $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/verification.cql
 
-    kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/retrieval.cql
-    kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/storage.cql
-    kubectl exec -n cassandra $CASSANDRA_POD -c cassandra -- cqlsh -u $USERNAME -p $PASSWORD --request-timeout=60 -f /tmp/verification.cql
-fi 
-
-if ! kubectl get namespace "nats" &> /dev/null; then
-
-    helm dependency build "./Nats Chart"; helm install nats "./Nats Chart" --create-namespace --namespace nats
-fi 
+helm dependency build "./Nats Chart"; helm install nats "./Nats Chart" --create-namespace --namespace $NAMESPACE
 
 
 # PostgreSQL-Admin-Benutzer und Passwort (falls nötig)
@@ -170,212 +143,171 @@ if ! kubectl get namespace "cnpg-system" &> /dev/null; then
     kubectl wait --for=condition=available deployment/cnpg-cloudnative-pg -n cnpg-system --timeout=120s
 fi
 
-if ! kubectl get namespace "postgres" &> /dev/null; then
-    echo "######### Install Postgres Cluster"
-    kubectl create namespace postgres
+echo "######### Install Postgres Cluster"
 
-    # Generate superuser password
-    POSTGRES_PASSWORD=$(openssl rand -hex 16)
+# Generate superuser password
+POSTGRES_PASSWORD=$(openssl rand -hex 16)
 
-    # Create superuser secret
-    kubectl create secret generic postgres-superuser -n postgres \
-        --from-literal=username=postgres \
-        --from-literal=password=$POSTGRES_PASSWORD
+# Create superuser secret
+kubectl create secret generic postgres-superuser -n ${NAMESPACE} \
+    --from-literal=username=postgres \
+    --from-literal=password=$POSTGRES_PASSWORD
 
-    # Create PostgreSQL cluster
-    kubectl apply -n postgres -f - <<EOF
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: postgres
-spec:
-  instances: 1
-  imageName: ghcr.io/cloudnative-pg/postgresql:16.2
-  bootstrap:
-    initdb:
-      database: postgres
-      owner: postgres
-      secret:
-        name: postgres-superuser
-  storage:
-    size: 4Gi
-  superuserSecret:
-    name: postgres-superuser
+# Create PostgreSQL cluster from manifest file
+kubectl apply -n ${NAMESPACE} -f ./manifests/postgres-cluster.yaml
+
+echo "Waiting for postgres cluster to be ready..."
+kubectl wait --for=condition=Ready cluster/postgres -n $NAMESPACE --timeout=300s
+
+echo "Waiting for postgres pod to be ready..."
+sleep 10
+kubectl wait --for=condition=ready pod/postgres-1 -n $NAMESPACE --timeout=300s
+
+kubectl delete secret statuslist-db-secret -n ${NAMESPACE} || echo "No statuslist-db-secret to delete"
+kubectl delete secret wellknown-db-secret -n ${NAMESPACE} || echo "No wellknown-db-secret to delete"
+
+while true; do
+  kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c 'SELECT 1'
+
+  if [ $? -eq 0 ]; then
+        echo "Erfolgreich mit Postgres verbunden!"
+  else
+        echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
+        sleep 5
+        continue
+  fi
+  break
+done
+
+echo "########### Install Keycloak#########"
+
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout tls.key \
+  -out tls.crt \
+  -subj "/CN=auth-cloud-wallet.${DOMAIN}/O=yourorganization"
+
+kubectl create secret tls xfsc-wildcard \
+  --cert=tls.crt \
+  --key=tls.key \
+  --namespace $NAMESPACE
+
+# Create Keycloak database and user in CloudNativePG
+KC_DB_USER="xc_keycloak"
+KC_DB_PASSWORD=$(openssl rand -hex 16)
+KC_DB_NAME="xfsc_keycloak"
+KC_ADMIN_USER="admin"
+KC_ADMIN_PASSWORD=$(openssl rand -hex 16)
+
+kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c "CREATE USER $KC_DB_USER WITH PASSWORD '$KC_DB_PASSWORD';"
+kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c "CREATE DATABASE $KC_DB_NAME OWNER $KC_DB_USER;"
+
+helm dependency build "./Keycloak"
+
+# Create temp values file with domain and namespace substitution
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" ./Keycloak/values.yaml > /tmp/keycloak-values.yaml
+
+# Create secrets file with generated credentials
+cat > /tmp/keycloak-secrets.yaml <<EOF
+secrets:
+  adminUser: ${KC_ADMIN_USER}
+  adminPassword: ${KC_ADMIN_PASSWORD}
+  dbPassword: ${KC_DB_PASSWORD}
 EOF
 
-    echo "Waiting for postgres cluster to be ready..."
-    kubectl wait --for=condition=Ready cluster/postgres -n postgres --timeout=300s
+# Install Keycloak with merged values files
+helm install keycloak "./Keycloak" --namespace $NAMESPACE -f /tmp/keycloak-values.yaml -f /tmp/keycloak-secrets.yaml
 
-    echo "Waiting for postgres pod to be ready..."
-    sleep 10
-    kubectl wait --for=condition=ready pod/postgres-1 -n postgres --timeout=300s
+echo "Waiting for Keycloak pod to be ready..."
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloak -n $NAMESPACE --timeout=300s
 
-   kubectl delete secret statuslist-db-secret -n ${NAMESPACE} || echo "No statuslist-db-secret to delete"
-   kubectl delete secret wellknown-db-secret -n ${NAMESPACE} || echo "No wellknown-db-secret to delete"
+echo "######### Install Vault"
 
-    while true; do
-      kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c 'SELECT 1'
+helm dependency build "./Vault";helm install vault "./Vault" --namespace ${NAMESPACE}
+sleep 10
+VAULT_POD=$(kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
+VAULT_PORT=8200
+LOCAL_PORT=8200
+VAULT_TOKEN="root"
 
-      if [ $? -eq 0 ]; then
-            echo "Erfolgreich mit Postgres verbunden!"
-      else
-            echo "Verbindung fehlgeschlagen. Versuche es in 5 Sekunden erneut..."
-            sleep 5
-            continue
-      fi
+# Starte kubectl port-forward im Hintergrund
+echo "Starte kubectl port-forward zum Vault-Pod..."
+# Loop zur Überprüfung der Vault-Verbindung
+while true; do
+  kubectl port-forward -n ${NAMESPACE} $VAULT_POD $LOCAL_PORT:$VAULT_PORT &
+  PID=$!
+  echo $PID
+  # Überprüfe, ob der Vault-Server erreichbar ist
+  if curl --silent --fail --output /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/sys/health"; then
+      echo "Erfolgreich mit Vault verbunden."
       break
-    done
-fi
+  else
+      echo "Warte auf Vault-Verbindung..."
+      sleep 2  # Warte 2 Sekunden, bevor du es erneut versuchst
+      continue
+  fi
+  kill $PID
+  break
+done
 
-if ! kubectl get namespace "keycloak" &> /dev/null; then
-    echo "########### Install Keycloak#########"
+curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"transit"}' http://127.0.0.1:8200/v1/sys/mounts/tenant_space
+curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ed25519"}' http://127.0.0.1:8200/v1/tenant_space/keys/signerkey
+curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ecdsa-p256"}' http://127.0.0.1:8200/v1/tenant_space/keys/eckey
 
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-      -keyout tls.key \
-      -out tls.crt \
-      -subj "/CN=auth-cloud-wallet.${DOMAIN}/O=yourorganization"
-
-    kubectl create namespace keycloak
-
-    kubectl create secret tls xfsc-wildcard \
-      --cert=tls.crt \
-      --key=tls.key \
-      --namespace keycloak
-
-    # Create Keycloak database and user in CloudNativePG
-    KC_DB_USER="xc_keycloak"
-    KC_DB_PASSWORD=$(openssl rand -hex 16)
-    KC_DB_NAME="xfsc_keycloak"
-    KC_ADMIN_USER="admin"
-    KC_ADMIN_PASSWORD=$(openssl rand -hex 16)
-
-    kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE USER $KC_DB_USER WITH PASSWORD '$KC_DB_PASSWORD';"
-    kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE DATABASE $KC_DB_NAME OWNER $KC_DB_USER;"
-
-    helm dependency build "./Keycloak"
-
-    # Create temp values file with domain substitution
-    sed "s/DOMAIN/${DOMAIN}/g" ./Keycloak/values.yaml > /tmp/keycloak-values.yaml
-
-    # Install Keycloak with secrets passed via --set
-    helm install keycloak "./Keycloak" --namespace keycloak -f /tmp/keycloak-values.yaml \
-      --set secrets.adminUser=$KC_ADMIN_USER \
-      --set secrets.adminPassword=$KC_ADMIN_PASSWORD \
-      --set secrets.dbPassword=$KC_DB_PASSWORD
-
-    echo "Waiting for Keycloak pod to be ready..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloak -n keycloak --timeout=300s
-fi
-
-if ! kubectl get namespace "vault" &> /dev/null; then
-
-    echo "######### Install Vault"
-
-    helm dependency build "./Vault";helm install vault "./Vault" --create-namespace --namespace vault
-    sleep 10
-      VAULT_NAMESPACE="vault"
-      VAULT_POD=$(kubectl get pods -n ${VAULT_NAMESPACE} -l app.kubernetes.io/name=vault -o jsonpath="{.items[0].metadata.name}")
-      VAULT_PORT=8200
-      LOCAL_PORT=8200
-      VAULT_TOKEN="root"
-
-      # Starte kubectl port-forward im Hintergrund
-      echo "Starte kubectl port-forward zum Vault-Pod..."
-      # Loop zur Überprüfung der Vault-Verbindung
-      while true; do
-
-          kubectl port-forward -n ${VAULT_NAMESPACE} $VAULT_POD $LOCAL_PORT:$VAULT_PORT &
-
-          PID=$!
-
-          echo $PID
-          # Überprüfe, ob der Vault-Server erreichbar ist
-          if curl --silent --fail --output /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/sys/health"; then
-              echo "Erfolgreich mit Vault verbunden."
-              break
-          else
-              echo "Warte auf Vault-Verbindung..."
-              sleep 2  # Warte 2 Sekunden, bevor du es erneut versuchst
-              continue
-          fi
-          kill $PID
-          break
-      done
-
-     curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"transit"}' http://127.0.0.1:8200/v1/sys/mounts/tenant_space
-     curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ed25519"}' http://127.0.0.1:8200/v1/tenant_space/keys/signerkey
-     curl --header "X-Vault-Token: $VAULT_TOKEN" --request POST --data '{"type":"ecdsa-p256"}' http://127.0.0.1:8200/v1/tenant_space/keys/eckey
-
-      # Beende das Port-Forwarding
-      kill %1
-
-
-fi
+# Beende das Port-Forwarding
+kill %1
 
 POSTGRES_PASSWORD=$(kubectl get secret --namespace postgres postgres-superuser -o jsonpath="{.data.password}" | base64 -d)
 
 if ! kubectl get secret "wellknown-db-secret" -n "${NAMESPACE}" > /dev/null 2>&1; then
-
     DB_WELLKNOWN_USER="wellknown"
     DB_WELLKNOWN_PASSWORD=$(openssl rand -hex 32)
     DB_WELLKNOWN_NAME="wellknown"
 
-    kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE USER $DB_WELLKNOWN_USER WITH PASSWORD '$DB_WELLKNOWN_PASSWORD';"
-    kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE DATABASE $DB_WELLKNOWN_NAME OWNER $DB_WELLKNOWN_USER;"
+    kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c "CREATE USER $DB_WELLKNOWN_USER WITH PASSWORD '$DB_WELLKNOWN_PASSWORD';"
+    kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c "CREATE DATABASE $DB_WELLKNOWN_NAME OWNER $DB_WELLKNOWN_USER;"
 
     kubectl create secret generic wellknown-db-secret -n ${NAMESPACE} \
     --from-literal=postgresql-username=wellknown \
     --from-literal=postgresql-password=$DB_WELLKNOWN_PASSWORD
-
 fi
 
 if ! kubectl get secret "statuslist-db-secret" -n "${NAMESPACE}" > /dev/null 2>&1; then
-
     DB_STATUS_USER="statuslist"
     DB_STATUS_NAME="status"
     DB_STATUS_PASSWORD=$(openssl rand -hex 32)
 
-    kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE USER $DB_STATUS_USER WITH PASSWORD '$DB_STATUS_PASSWORD';"
-    kubectl exec -it postgres-1 -n postgres -- psql -U postgres -c "CREATE DATABASE $DB_STATUS_NAME OWNER $DB_STATUS_USER;"
+    kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c "CREATE USER $DB_STATUS_USER WITH PASSWORD '$DB_STATUS_PASSWORD';"
+    kubectl exec -it postgres-1 -n $NAMESPACE -- psql -U postgres -c "CREATE DATABASE $DB_STATUS_NAME OWNER $DB_STATUS_USER;"
 
     kubectl create secret generic statuslist-db-secret -n ${NAMESPACE} \
     --from-literal=postgresql-username=statuslist \
     --from-literal=postgresql-password=$DB_STATUS_PASSWORD
 fi
 
-
-
-
-echo "######### Install Universalresolver" 
+echo "######### Install Universalresolver"
 
 helm dependency build "./Universal Resolver"
 helm install universal-resolver "./Universal Resolver" --namespace ${NAMESPACE}
 
-
-
 echo "####### Install Services"
 
-
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
--keyout tls.key \
--out tls.crt \
--subj "/CN=cloud-wallet.${DOMAIN}/O=yourorganization"
+  -keyout tls.key \
+  -out tls.crt \
+  -subj "/CN=cloud-wallet.${DOMAIN}/O=yourorganization"
 
 if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
-
       echo "####### Install Pre Auth Bridge Client"
-
       # Wait for Keycloak to be ready before attempting to get access token
       echo "Waiting for Keycloak to be ready..."
-      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloak -n keycloak --timeout=300s
-
+      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=keycloak -n $NAMESPACE --timeout=300s
       # Start port-forward to Keycloak in background
       echo "Starting port-forward to Keycloak..."
-      kubectl port-forward svc/keycloak-http -n keycloak 8180:8080 &
+      kubectl port-forward svc/keycloak-http -n $NAMESPACE 8180:8080 &
       KC_PORT_FORWARD_PID=$!
       sleep 5
 
-      ADMIN_SECRET_NAMESPACE="keycloak"   # Namespace für das Admin-Secret
+      ADMIN_SECRET_NAMESPACE="${NAMESPACE}"   # Namespace für das Admin-Secret
       ADMIN_SECRET_NAME="keycloak-init-secrets"  # Name des Kubernetes-Secrets für Admin
       NEW_CLIENT_SECRET_NAME="preauthbridge-oauth"  # Name des neuen Kubernetes-Secrets für den Client
       KEYCLOAK_URL="http://localhost:8180"  # Use port-forward URL
@@ -423,7 +355,7 @@ if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
         curl -X DELETE $URL \
         -H "Authorization: Bearer $ACCESS_TOKEN"
       fi
-    
+
 
       NEW_CLIENT_SECRET=$(openssl rand -hex 32)
 
@@ -459,7 +391,7 @@ if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
         echo "Fehler: Konnte die Client-ID nicht abrufen."
         exit 1
       fi
- 
+
       # Schreibe Client-ID und Secret in ein neues Kubernetes-Secret im separaten Namespace für den Client
       kubectl create secret generic $NEW_CLIENT_SECRET_NAME -n ${NAMESPACE} \
         --from-literal=id=$NEW_CLIENT_ID \
@@ -473,62 +405,11 @@ if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
         --from-literal=redis-user=default \
         --from-literal=redis-password=$REDISPW
 
-      # Deploy Redis with official image
-      kubectl apply -n ${NAMESPACE} -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis-master
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-        - name: redis
-          image: docker.io/redis:7
-          ports:
-            - containerPort: 6379
-          command: ["/bin/sh", "-c"]
-          args: ["redis-server --requirepass \$REDIS_PASSWORD"]
-          env:
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: preauthbridge-redis
-                  key: redis-password
-          resources:
-            requests:
-              memory: "128Mi"
-              cpu: "100m"
-            limits:
-              memory: "256Mi"
-              cpu: "250m"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-master
-spec:
-  selector:
-    app: redis
-  ports:
-    - port: 6379
-      targetPort: 6379
-EOF
+      # Deploy Redis from manifest file
+      kubectl apply -n ${NAMESPACE} -f ./manifests/redis.yaml
 
       echo "Waiting for Redis to be ready..."
       kubectl wait --for=condition=available deployment/redis-master -n ${NAMESPACE} --timeout=120s
-
-      kubectl create secret tls xfsc-wildcard \
-        --cert=tls.crt \
-        --key=tls.key \
-        --namespace ${NAMESPACE}
 
       helm dependency build "./Pre Authorization Bridge Chart"
 
@@ -541,32 +422,27 @@ EOF
       kill $KC_PORT_FORWARD_PID 2>/dev/null || true
 fi
 
-echo "######### Install TSA Stuff" 
+echo "######### Install TSA Stuff"
 
 helm dependency build "./Policy Chart"
-helm install policy-service "./Policy Chart" --namespace ${NAMESPACE} \
-  --set "policy.policy.nats.url=nats://nats.nats.svc.cluster.local:4222" \
-  --set "policy.ingress.frontendDomain=cloud-wallet.${DOMAIN}"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Policy Chart/values.yaml" > /tmp/policy-values.yaml
+helm install policy-service "./Policy Chart" --namespace ${NAMESPACE} -f /tmp/policy-values.yaml
 
 rm -rf signer
 rm -rf sd-jwt-service
-git clone https://gitlab.eclipse.org/eclipse/xfsc/tsa/signer.git 
+git clone https://gitlab.eclipse.org/eclipse/xfsc/tsa/signer.git
 git clone https://gitlab.eclipse.org/eclipse/xfsc/common-services/sd-jwt-service.git
 
 helm dependency build "./signer/deployment/helm"
-helm install signer "./signer/deployment/helm" --namespace ${NAMESPACE} \
-  --set "signer.vault.addr=http://vault.vault.svc.cluster.local:8200" \
-  --set "signer.nats.natsHost=nats://nats.nats.svc.cluster.local:4222" \
-  --set "signer.sdJwt.url=http://sd-jwt-service.${NAMESPACE}.svc.cluster.local:3000" \
-  --set "signer.env[0].value=http://sd-jwt-service.${NAMESPACE}.svc.cluster.local:3000" \
-  --set "signer.env[1].value=http://vault.vault.svc.cluster.local:8200" \
-  --set "signer.env[3].value=nats://nats.nats.svc.cluster.local:4222" \
-  --set "signer.env[4].value=nats://nats.nats.svc.cluster.local:4222" \
-  --set "signer.env[6].value=https://vault.vault.svc:8200"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./signer/deployment/helm/values.yaml" > /tmp/signer-values.yaml
+helm install signer "./signer/deployment/helm" --namespace ${NAMESPACE} -f /tmp/signer-values.yaml \
+  --set signer.nats.natsHost="nats://nats.${NAMESPACE}.svc.cluster.local:4222"
 
 helm dependency build "./sd-jwt-service/deployment/helm"
-helm install sd-jwt "./sd-jwt-service/deployment/helm" --namespace ${NAMESPACE} \
-  --set "sd-jwt-service.config.signUrl=http://signer.${NAMESPACE}.svc.cluster.local:8080/v1/sign"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./sd-jwt-service/deployment/helm/values.yaml" > /tmp/sdjwt-values.yaml
+helm install sd-jwt "./sd-jwt-service/deployment/helm" --namespace ${NAMESPACE} -f /tmp/sdjwt-values.yaml \
+  --set image.name="sd-jwt-service" \
+  --set image.tag="latest"
 
 kubectl create secret generic vault -n ${NAMESPACE} \
   --from-literal=token=root
@@ -574,13 +450,12 @@ kubectl create secret generic vault -n ${NAMESPACE} \
 echo "###################Install Well Known Routes"
 
 helm dependency build "./Well Known Ingress Rules"
-helm install well-known-rules "./Well Known Ingress Rules" -n ${NAMESPACE} \
-  --set "ingress.hostname=cloud-wallet.${DOMAIN}"
+sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Well Known Ingress Rules/values.yaml" > /tmp/wellknown-rules-values.yaml
+helm install well-known-rules "./Well Known Ingress Rules" -n ${NAMESPACE} -f /tmp/wellknown-rules-values.yaml
 
 helm dependency build "./Well Known Chart"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Well Known Chart/values.yaml" > /tmp/wellknown-values.yaml
-helm install well-known "./Well Known Chart" -n ${NAMESPACE} -f /tmp/wellknown-values.yaml \
-  --set "well-known-service.config.postgres.host=postgres-rw.postgres.svc.cluster.local"
+helm install well-known "./Well Known Chart" -n ${NAMESPACE} -f /tmp/wellknown-values.yaml
 
 helm dependency build "./Didcomm"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Didcomm/values.yaml" > /tmp/didcomm-values.yaml

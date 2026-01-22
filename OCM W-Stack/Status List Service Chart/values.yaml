@@ -50,7 +50,7 @@ status-list-service:
       secretName: statuslist-db-secret
       userkey: postgresql-username
       passwordKey: postgresql-password
-      host: postgres-postgresql.NAMESPACE.svc.cluster.local    
+      host: postgres-rw.NAMESPACE.svc.cluster.local    
       port: 5432
       db: status
       params: "sslmode:disable"

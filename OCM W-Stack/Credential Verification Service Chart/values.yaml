@@ -42,7 +42,7 @@ credential-verification-service:
     cassandra:
       Key: cassandra-password
       Name: cassandra
-      cassandraHosts: cassandra.NAMESPACE.svc.cluster.local
+      cassandraHosts: cassandra-dc1-service.NAMESPACE.svc.cluster.local
       cassandraUser: cassandra
     signing:
       Name:  signing

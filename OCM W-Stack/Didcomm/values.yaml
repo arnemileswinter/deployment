@@ -77,7 +77,7 @@ didcomm-connector:
         timeoutInSec: 10
     database:
       inMemory: false
-      host: cassandra.NAMESPACE.svc.cluster.local:9042
+      host: cassandra-dc1-service.NAMESPACE.svc.cluster.local:9042
       port: 9042
       user: "cassandra"
       password:

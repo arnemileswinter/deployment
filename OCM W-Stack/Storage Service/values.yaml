@@ -53,7 +53,7 @@ storage-service:
   config:
     port: 8080
     cassandra:
-      hosts: cassandra.NAMESPACE.svc.cluster.local:9042
+      hosts: cassandra-dc1-service.NAMESPACE.svc.cluster.local:9042
       keyspace: tenant_space
       user: cassandra
       passwordSecret: cassandra
@@ -69,7 +69,7 @@ storage-service:
     messaging:
       enabled: true
       storageTopic: storage.service.store
-      host: nats://nats.NAMESPACE.svc.cluster.local:4222
+      url: nats.NAMESPACE.svc.cluster.local:4222
       protocol: nats
       queueGroup: storage-service
     vault:

@@ -2,25 +2,12 @@ well-known-service:
   image:
     pullPolicy: Always
   ingress:
-   enabled: false  # Disabled - using local template override instead
-# Local ingress configuration (used by templates/ingress.yaml)
-localIngress:
-  enabled: true
-  hosts:
-    - host: cloud-wallet.DOMAIN
-      paths:
-        - path: /.well-known/openid-credential-issuer
-          pathtype: ImplementationSpecific
-          port: 8080
-  tls:
-    - secretName: xfsc-wildcard
-      hosts:
-        - cloud-wallet.DOMAIN
+    enabled: false  # Disabled - using local template override instead
   config:
     loglevel: DEBUG
     isdev: false
     postgres:
-      host: postgres-rw.postgres.svc.cluster.local
+      host: postgres-rw.NAMESPACE.svc.cluster.local
       port: 5432
       database: wellknown
       user: wellknown
@@ -34,3 +21,17 @@ localIngress:
     issuer: cloud-wallet.DOMAIN
     importer:
       broadcast:
+
+# Local ingress configuration (used by templates/ingress.yaml)
+localIngress:
+  enabled: true
+  hosts:
+    - host: cloud-wallet.DOMAIN
+      paths:
+        - path: /.well-known/openid-credential-issuer
+          pathtype: ImplementationSpecific
+          port: 8080
+  tls:
+    - secretName: xfsc-wildcard
+      hosts:
+        - cloud-wallet.DOMAIN

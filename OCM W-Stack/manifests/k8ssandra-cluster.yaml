@@ -1,0 +1,24 @@
+apiVersion: k8ssandra.io/v1alpha1
+kind: K8ssandraCluster
+metadata:
+  name: cassandra
+spec:
+  cassandra:
+    serverVersion: "4.1.0"
+    superuserSecretRef:
+      name: cassandra-superuser
+    datacenters:
+      - metadata:
+          name: dc1
+        size: 1
+        storageConfig:
+          cassandraDataVolumeClaimSpec:
+            storageClassName: local-path
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 4Gi
+        config:
+          jvmOptions:
+            heapSize: 512M

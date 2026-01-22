@@ -49,7 +49,7 @@ credential-retrieval-service:
       queuegroup: offering
       requestTimeOut: 10s
     cassandra:
-      hosts: cassandra.NAMESPACE.svc.cluster.local:9042
+      hosts: cassandra-dc1-service.NAMESPACE.svc.cluster.local:9042
       keyspace: tenant_space
       user: cassandra
       passwordSecret: cassandra

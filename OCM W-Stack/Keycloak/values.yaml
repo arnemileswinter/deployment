@@ -50,7 +50,7 @@ keycloak:
     - name: KC_DB
       value: postgres
     - name: KC_DB_URL
-      value: jdbc:postgresql://postgres-rw.postgres.svc.cluster.local:5432/xfsc_keycloak
+      value: jdbc:postgresql://postgres-rw.NAMESPACE.svc.cluster.local:5432/xfsc_keycloak
     - name: KC_DB_USERNAME
       value: xc_keycloak
     - name: KC_DB_PASSWORD
