@@ -416,7 +416,8 @@ if ! kubectl get service "pre-authorization-bridge-service" &> /dev/null; then
       # Create temp values file with domain and namespace substitution
       sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Pre Authorization Bridge Chart/values.yaml" > /tmp/preauthbridge-values.yaml
 
-      helm install preauthbridge "./Pre Authorization Bridge Chart" -n ${NAMESPACE} -f /tmp/preauthbridge-values.yaml
+      helm install preauthbridge "./Pre Authorization Bridge Chart" -n ${NAMESPACE} -f /tmp/preauthbridge-values.yaml \
+        --set pre-authorization-bridge.ingress.ingressClassName=traefik
 
       # Stop Keycloak port-forward
       kill $KC_PORT_FORWARD_PID 2>/dev/null || true
@@ -464,11 +465,13 @@ helm install didcomm-connector "./Didcomm" -n ${NAMESPACE} -f /tmp/didcomm-value
 
 helm dependency build "./Credential Issuance"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Credential Issuance/values.yaml" > /tmp/issuance-values.yaml
-helm install credential-issuance "./Credential Issuance" -n ${NAMESPACE} -f /tmp/issuance-values.yaml
+helm install credential-issuance "./Credential Issuance" -n ${NAMESPACE} -f /tmp/issuance-values.yaml \
+  --set issuance-service.ingress.ingressClassName=traefik
 
 helm dependency build "./Credential Retrieval"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Credential Retrieval/values.yaml" > /tmp/retrieval-values.yaml
-helm install credential-retrieval "./Credential Retrieval" -n ${NAMESPACE} -f /tmp/retrieval-values.yaml
+helm install credential-retrieval "./Credential Retrieval" -n ${NAMESPACE} -f /tmp/retrieval-values.yaml \
+  --set credential-retrieval-service.ingress.ingressClassName=traefik
 
 echo "Create a signing key for credential verification service"
 openssl ecparam -genkey -name prime256v1 -noout -out signing_key.pem
@@ -476,7 +479,8 @@ kubectl create secret -n ${NAMESPACE} generic signing --from-file=signing-key=si
 
 helm dependency build "./Credential Verification Service Chart"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Credential Verification Service Chart/values.yaml" > /tmp/verification-values.yaml
-helm install credential-verification "./Credential Verification Service Chart" -n ${NAMESPACE} -f /tmp/verification-values.yaml
+helm install credential-verification "./Credential Verification Service Chart" -n ${NAMESPACE} -f /tmp/verification-values.yaml \
+  --set credential-verification-service.ingress.ingressClassName=traefik
 
 helm dependency build "./Storage Service"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Storage Service/values.yaml" > /tmp/storage-values.yaml
@@ -484,7 +488,8 @@ helm install storage-service "./Storage Service" -n ${NAMESPACE} -f /tmp/storage
 
 helm dependency build "./Status List Service Chart"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Status List Service Chart/values.yaml" > /tmp/statuslist-values.yaml
-helm install statuslist-service "./Status List Service Chart" -n ${NAMESPACE} -f /tmp/statuslist-values.yaml
+helm install statuslist-service "./Status List Service Chart" -n ${NAMESPACE} -f /tmp/statuslist-values.yaml \
+  --set status-list-service.ingress.ingressClassName=traefik
 
 helm dependency build "./Dummy Content Signer"
 sed -e "s/DOMAIN/${DOMAIN}/g" -e "s/NAMESPACE/${NAMESPACE}/g" "./Dummy Content Signer/values.yaml" > /tmp/dummysigner-values.yaml
